@@ -33,12 +33,32 @@ function setup(env) {
 	createDebug.formatters = {};
 
 	/**
+	* Cache for namespace instances to avoid recreating debug instances
+	*/
+	createDebug.instances = new Map();
+
+	/**
+	* Cache for color selections to avoid recalculating hashes
+	*/
+	createDebug.colorCache = new Map();
+
+	/**
+	* Cache for compiled namespace patterns
+	*/
+	createDebug.patternCache = new Map();
+
+	/**
 	* Selects a color for a debug namespace
 	* @param {String} namespace The namespace string for the debug instance to be colored
 	* @return {Number|String} An ANSI color code for the given namespace
 	* @api private
 	*/
 	function selectColor(namespace) {
+		// Check cache first
+		if (createDebug.colorCache.has(namespace)) {
+			return createDebug.colorCache.get(namespace);
+		}
+
 		let hash = 0;
 
 		for (let i = 0; i < namespace.length; i++) {
@@ -46,7 +66,9 @@ function setup(env) {
 			hash |= 0; // Convert to 32bit integer
 		}
 
-		return createDebug.colors[Math.abs(hash) % createDebug.colors.length];
+		const color = createDebug.colors[Math.abs(hash) % createDebug.colors.length];
+		createDebug.colorCache.set(namespace, color);
+		return color;
 	}
 	createDebug.selectColor = selectColor;
 
@@ -62,9 +84,10 @@ function setup(env) {
 		let enableOverride = null;
 		let namespacesCache;
 		let enabledCache;
+		let formatCache = new Map();
 
 		function debug(...args) {
-			// Disabled?
+			// Disabled? Early exit for performance
 			if (!debug.enabled) {
 				return;
 			}
@@ -86,31 +109,55 @@ function setup(env) {
 				args.unshift('%O');
 			}
 
-			// Apply any `formatters` transformations
-			let index = 0;
-			args[0] = args[0].replace(/%([a-zA-Z%])/g, (match, format) => {
-				// If we encounter an escaped % then don't increase the array index
-				if (match === '%%') {
-					return '%';
-				}
-				index++;
-				const formatter = createDebug.formatters[format];
-				if (typeof formatter === 'function') {
-					const val = args[index];
-					match = formatter.call(self, val);
+			// Cache the original format string for potential reuse
+			const originalFormat = args[0];
 
-					// Now we need to remove `args[index]` since it's inlined in the `format`
-					args.splice(index, 1);
-					index--;
-				}
-				return match;
-			});
+			// Check format cache for this specific format string
+			let cachedFormatter = formatCache.get(originalFormat);
+
+			if (!cachedFormatter) {
+				// Build formatter function and cache it
+				const formatParts = [];
+				const formatArgs = [];
+				let index = 0;
+
+				// Pre-compile the format string
+				const compiled = originalFormat.replace(/%([a-zA-Z%])/g, (match, format) => {
+					if (match === '%%') {
+						return '%';
+					}
+					const formatter = createDebug.formatters[format];
+					if (typeof formatter === 'function') {
+						formatArgs.push({index: index++, formatter, format});
+						return '\x00' + (formatArgs.length - 1) + '\x00'; // Placeholder
+					}
+					return match;
+				});
+
+				cachedFormatter = {compiled, formatArgs};
+				formatCache.set(originalFormat, cachedFormatter);
+			}
+
+			// Apply cached formatters
+			let result = cachedFormatter.compiled;
+			const appliedArgs = [...args];
+
+			// Apply formatters in reverse order to handle index shifts
+			for (let i = cachedFormatter.formatArgs.length - 1; i >= 0; i--) {
+				const {index, formatter} = cachedFormatter.formatArgs[i];
+				const val = appliedArgs[index + 1];
+				const formatted = formatter.call(self, val);
+				result = result.replace('\x00' + i + '\x00', formatted);
+				appliedArgs.splice(index + 1, 1);
+			}
+
+			appliedArgs[0] = result;
 
 			// Apply env-specific formatting (colors, etc.)
-			createDebug.formatArgs.call(self, args);
+			createDebug.formatArgs.call(self, appliedArgs);
 
 			const logFn = self.log || createDebug.log;
-			logFn.apply(self, args);
+			logFn.apply(self, appliedArgs);
 		}
 
 		debug.namespace = namespace;
@@ -166,6 +213,9 @@ function setup(env) {
 		createDebug.names = [];
 		createDebug.skips = [];
 
+		// Clear pattern cache when namespaces change
+		createDebug.patternCache.clear();
+
 		const split = (typeof namespaces === 'string' ? namespaces : '')
 			.trim()
 			.replace(/\s+/g, ',')
@@ -190,6 +240,12 @@ function setup(env) {
 	 * @return {Boolean}
 	 */
 	function matchesTemplate(search, template) {
+		// Check pattern cache
+		const cacheKey = search + '\x00' + template;
+		if (createDebug.patternCache.has(cacheKey)) {
+			return createDebug.patternCache.get(cacheKey);
+		}
+
 		let searchIndex = 0;
 		let templateIndex = 0;
 		let starIndex = -1;
@@ -212,6 +268,7 @@ function setup(env) {
 				matchIndex++;
 				searchIndex = matchIndex;
 			} else {
+				createDebug.patternCache.set(cacheKey, false);
 				return false; // No match
 			}
 		}
@@ -221,7 +278,9 @@ function setup(env) {
 			templateIndex++;
 		}
 
-		return templateIndex === template.length;
+		const result = templateIndex === template.length;
+		createDebug.patternCache.set(cacheKey, result);
+		return result;
 	}
 
 	/**

@@ -26,94 +26,113 @@ exports.destroy = util.deprecate(
 
 exports.colors = [6, 2, 3, 4, 5, 1];
 
-try {
-	// Optional dependency (as in, doesn't need to be installed, NOT like optionalDependencies in package.json)
-	// eslint-disable-next-line import/no-extraneous-dependencies
-	const supportsColor = require('supports-color');
+// Cache color support detection
+let colorSupportChecked = false;
+let cachedColors = null;
 
-	if (supportsColor && (supportsColor.stderr || supportsColor).level >= 2) {
-		exports.colors = [
-			20,
-			21,
-			26,
-			27,
-			32,
-			33,
-			38,
-			39,
-			40,
-			41,
-			42,
-			43,
-			44,
-			45,
-			56,
-			57,
-			62,
-			63,
-			68,
-			69,
-			74,
-			75,
-			76,
-			77,
-			78,
-			79,
-			80,
-			81,
-			92,
-			93,
-			98,
-			99,
-			112,
-			113,
-			128,
-			129,
-			134,
-			135,
-			148,
-			149,
-			160,
-			161,
-			162,
-			163,
-			164,
-			165,
-			166,
-			167,
-			168,
-			169,
-			170,
-			171,
-			172,
-			173,
-			178,
-			179,
-			184,
-			185,
-			196,
-			197,
-			198,
-			199,
-			200,
-			201,
-			202,
-			203,
-			204,
-			205,
-			206,
-			207,
-			208,
-			209,
-			214,
-			215,
-			220,
-			221
-		];
+function getColors() {
+	if (colorSupportChecked) {
+		return cachedColors || exports.colors;
 	}
-} catch (error) {
-	// Swallow - we only care if `supports-color` is available; it doesn't have to be.
+
+	colorSupportChecked = true;
+
+	try {
+		// Optional dependency (as in, doesn't need to be installed, NOT like optionalDependencies in package.json)
+		// eslint-disable-next-line import/no-extraneous-dependencies
+		const supportsColor = require('supports-color');
+
+		if (supportsColor && (supportsColor.stderr || supportsColor).level >= 2) {
+			cachedColors = [
+				20,
+				21,
+				26,
+				27,
+				32,
+				33,
+				38,
+				39,
+				40,
+				41,
+				42,
+				43,
+				44,
+				45,
+				56,
+				57,
+				62,
+				63,
+				68,
+				69,
+				74,
+				75,
+				76,
+				77,
+				78,
+				79,
+				80,
+				81,
+				92,
+				93,
+				98,
+				99,
+				112,
+				113,
+				128,
+				129,
+				134,
+				135,
+				148,
+				149,
+				160,
+				161,
+				162,
+				163,
+				164,
+				165,
+				166,
+				167,
+				168,
+				169,
+				170,
+				171,
+				172,
+				173,
+				178,
+				179,
+				184,
+				185,
+				196,
+				197,
+				198,
+				199,
+				200,
+				201,
+				202,
+				203,
+				204,
+				205,
+				206,
+				207,
+				208,
+				209,
+				214,
+				215,
+				220,
+				221
+			];
+			exports.colors = cachedColors;
+			return cachedColors;
+		}
+	} catch (error) {
+		// Swallow - we only care if `supports-color` is available; it doesn't have to be.
+	}
+
+	return exports.colors;
 }
+
+// Initialize colors on first load
+getColors();
 
 /**
  * Build up the default `inspectOpts` object from the environment variables.
@@ -152,10 +171,23 @@ exports.inspectOpts = Object.keys(process.env).filter(key => {
  * Is stdout a TTY? Colored output is enabled when `true`.
  */
 
+// Cache the result of useColors check
+let useColorsCache = null;
+let useColorsCacheTime = 0;
+const USE_COLORS_CACHE_TTL = 1000; // Cache for 1 second
+
 function useColors() {
-	return 'colors' in exports.inspectOpts ?
+	const now = Date.now();
+	if (useColorsCache !== null && (now - useColorsCacheTime) < USE_COLORS_CACHE_TTL) {
+		return useColorsCache;
+	}
+
+	useColorsCache = 'colors' in exports.inspectOpts ?
 		Boolean(exports.inspectOpts.colors) :
 		tty.isatty(process.stderr.fd);
+	useColorsCacheTime = now;
+
+	return useColorsCache;
 }
 
 /**
